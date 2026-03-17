@@ -1,104 +1,104 @@
-# Project 1 Phase 1: Quadrotor Control
+# 项目 1 第一阶段：四旋翼控制
 
-Assignd: Feb 24, 2026
+布置时间：2026 年 2 月 24 日
 
-Due: Mar 6, 2026
+截止时间：2026 年 3 月 6 日
 
-## Overview
+## 概述
 
-In this phase, you will implement a controller for a quadrotor to track different trajectories. The goal is to understand the basic control principles and implement a controller that can stabilize the quadrotor and follow desired trajectories.
+在这一阶段，你将为四旋翼实现一个控制器，使其能够跟踪不同的轨迹。目标是理解基本控制原理，并实现一个能够稳定四旋翼、并使其跟随期望轨迹的控制器。
 
-## Objectives
+## 目标
 
-1. Implement a controller for quadrotor trajectory tracking.
-2. Test your controller with different trajectories:
-   - Hover (stationary at origin)
-   - Circle (helical trajectory with increasing radius)
-   - Square (piecewise linear path through waypoints)
-3. Tune controller gains to achieve stable and accurate trajectory tracking
+1. 为四旋翼轨迹跟踪实现一个控制器。
+2. 使用不同轨迹测试你的控制器：
+   - 悬停（在原点静止）
+   - 圆形（半径逐渐增大的螺旋轨迹）
+   - 方形（通过一系列航点的分段线性路径）
+3. 调整控制器增益，以实现稳定且精确的轨迹跟踪。
 
-**Bonus points** will be given if you write your own trajectory besides the above three.
+如果你除了上述三种轨迹之外，还自己编写了新的轨迹，将会获得**额外加分**。
 
 | ![](https://wpcos-1300629776.cos.ap-chengdu.myqcloud.com/picgo/newplot.png) | ![](https://wpcos-1300629776.cos.ap-chengdu.myqcloud.com/picgo/newplot%20(1).png) |
 | ------------------------------------------------------------ | ------------------------------------------------------------ |
 
-## System Model
+## 系统模型
 
-The quadrotor has 13 states:
-- **Position** (x, y, z): 3D position in world frame
-- **Velocity** (vx, vy, vz): Linear velocity in world frame
-- **Quaternion** (qw, qx, qy, qz): Attitude representation
-- **Angular velocity** (ωx, ωy, ωz): Angular velocity in body frame
+四旋翼共有 13 个状态量：
+- **位置** (x, y, z)：世界坐标系中的三维位置
+- **速度** (vx, vy, vz)：世界坐标系中的线速度
+- **四元数** (qw, qx, qy, qz)：姿态表示
+- **角速度** (ωx, ωy, ωz)：机体系中的角速度
 
-The controller outputs:
-- **F**: Total thrust force
-- **M**: Moment vector [Mx, My, Mz] in body frame
+控制器输出为：
+- **F**：总推力
+- **M**：机体系中的力矩向量 [Mx, My, Mz]
 
-## Your Task
+## 你的任务
 
-Complete the `Controller` class in `sim/controller.py`:
+完成 `sim/controller.py` 中的 `Controller` 类：
 
-Compute the control inputs `F` and `M` based on the current state `s` and desired state `s_des`.
+根据当前状态 `s` 和期望状态 `s_des` 计算控制输入 `F` 和 `M`。
 
-**Important**: Remember to wrap angles to [-π, π] using `wrap_to_pi()` when computing angle errors.
+**重要**：在计算角度误差时，记得使用 `wrap_to_pi()` 将角度限制到 [-π, π] 范围内。
 
-## Running the Simulation
+## 运行仿真
 
-1. Run the web interface:
+1. 运行网页界面：
    ```bash
    python app.py
    ```
 
-2. Open your browser to `http://localhost:8080`
+2. 在浏览器中打开 `http://localhost:8080`
 
-3. Select a trajectory and click "Run Simulation"
+3. 选择一条轨迹并点击 “Run Simulation”
 
-## Evaluation Criteria
+## 评估标准
 
-Your controller will be evaluated on:
-1. **Stability**: The quadrotor should not diverge or oscillate excessively
-2. **Tracking accuracy**: Minimize position and velocity errors
-3. **Smoothness**: Avoid sudden control inputs or jerky motion
+你的控制器将根据以下方面进行评估：
+1. **稳定性**：四旋翼不应发散，也不应出现过度振荡
+2. **跟踪精度**：尽量减小位置误差和速度误差
+3. **平滑性**：避免突兀的控制输入或抖动的运动
 
-## Provided Code Structure
+## 已提供的代码结构
 
-- `app.py`: Web interface for running simulations
-- `sim/controller.py`: **Your implementation goes here**
-- `sim/trajectories.py`: Predefined trajectory functions, **you can add your own trajectory here**
-- `sim/simulator.py`: Simulation engine
-- `sim/dynamics.py`: Quadrotor dynamics model
-- `sim/model.py`: Quadrotor parameters
-- `sim/math_utils.py`: Helper functions for rotations
-- `sim/visualization.py`: Plotting utilities
+- `app.py`：用于运行仿真的网页界面
+- `sim/controller.py`：**你需要在这里实现代码**
+- `sim/trajectories.py`：预定义轨迹函数，**你也可以在这里添加自己的轨迹**
+- `sim/simulator.py`：仿真引擎
+- `sim/dynamics.py`：四旋翼动力学模型
+- `sim/model.py`：四旋翼参数
+- `sim/math_utils.py`：旋转相关的辅助函数
+- `sim/visualization.py`：绘图工具
 
-## Tips
+## 提示
 
-1. Start with the hover trajectory to test basic stabilization
-2. The state vector `s` and desired state `s_des` have this structure:
-   - `s[0:3]`: position [x, y, z]
-   - `s[3:6]`: velocity [vx, vy, vz]
-   - `s[6:10]`: quaternion [qw, qx, qy, qz]
-   - `s[10:13]`: angular velocity [ωx, ωy, ωz]
-   - `s_des[0:9]`: desired [position, velocity, acceleration]
-   - `s_des[9:11]`: desired [yaw, yaw_rate]
+1. 可以先从悬停轨迹开始测试基本稳定控制
+2. 状态向量 `s` 和期望状态 `s_des` 的结构如下：
+   - `s[0:3]`：位置 [x, y, z]
+   - `s[3:6]`：速度 [vx, vy, vz]
+   - `s[6:10]`：四元数 [qw, qx, qy, qz]
+   - `s[10:13]`：角速度 [ωx, ωy, ωz]
+   - `s_des[0:9]`：期望值 [位置、速度、加速度]
+   - `s_des[9:11]`：期望值 [偏航角、偏航角速度]
 
-## Submission
+## 提交要求
 
-Submit your completed code along with a brief report.
+提交你完成的代码，以及一份简短报告。
 
-Code should include all necessary files to run your controller in simulation.
+代码应包含运行你的控制器仿真所需的全部文件。
 
-The report should include the following sections with max 2 pages:
+报告最多 2 页，应包含以下部分：
 
-- Figures plotted by simulator.
-- Statistics about your controller. (For example, RMS error between current state and desired state for position, velocity).
-- Analysis of your result. (For example, parameter studies).
-- Any other things we should be aware of
+- 仿真器绘制的图像
+- 关于你控制器的统计数据（例如当前位置与期望位置之间的位置、速度 RMS 误差）
+- 对结果的分析（例如参数研究）
+- 任何其他我们需要注意的内容
 
-Please submit a single zip file named `proj1phase1_yourname.zip` to the canvas.
+请将所有内容打包为一个名为 `proj1phase1_yourname.zip` 的压缩文件，并提交到 Canvas。
 
-Please cite the paper, GitHub repository, or any other resources you referred to while completing this assignment.  Please keep [academic integrity](https://registry.hkust.edu.hk/resource-library/academic-integrity), plagiarism is not tolerated in this course.
+请注明你在完成本次作业过程中参考的论文、GitHub 仓库或任何其他资源。请遵守[学术诚信](https://registry.hkust.edu.hk/resource-library/academic-integrity)要求，本课程不容忍抄袭行为。
 
-## Late Submission Policy
+## 延期提交政策
 
-Late submissions are accepted up to 7 days after the due date, with 5% (of the total grade of the item) penalty per day.
+允许在截止日期后 7 天内迟交，但每天将扣除该项总分的 5%。
