@@ -134,12 +134,123 @@ def _generate_minimum_jerk(waypoints: np.ndarray, n_seg: int, total_time: float)
     # ========================================================================
     # TODO: Implement your minimum jerk trajectory generation here
     # ========================================================================
+    # 这一部分和 smooth_only 最大的区别在于：
+    # 我们不再先“拍脑袋”指定 waypoint 处的速度/加速度，
+    # 而是把所有多项式系数放进一个二次规划里统一求解：
+    #
+    #   min  integral (p'''(t)^2) dt
+    #   s.t. 必须经过所有 waypoint，并满足连续性约束
+    #
+    # 这里每一段使用 6 阶多项式：
+    #   p(t) = c0 + c1 t + c2 t^2 + ... + c6 t^6
+    # 所以每段有 7 个系数。
 
+    seg_vec = waypoints[1:] - waypoints[:-1]
+    seg_len = np.linalg.norm(seg_vec, axis=1)
+    seg_len = np.maximum(seg_len, 1e-3)
+    T_scale = total_time * seg_len / np.sum(seg_len)
+
+    n_coeff = 7  # 6 阶多项式 -> 7 个系数
+    n_var = n_seg * n_coeff
+
+    def poly_terms(deriv: int, t: float) -> np.ndarray:
+        """
+        返回一个长度为 7 的行向量，使得：
+            poly_terms(deriv, t) @ c = p^(deriv)(t)
+        其中 c = [c0, c1, ..., c6]
+        """
+        row = np.zeros(n_coeff)
+        for i in range(deriv, n_coeff):
+            row[i] = math.factorial(i) / math.factorial(i - deriv) * (t ** (i - deriv))
+        return row
+
+    def block_row(seg: int, deriv: int, t: float) -> np.ndarray:
+        """把单段多项式约束放到整条轨迹的大变量向量里。"""
+        row = np.zeros(n_var)
+        row[seg * n_coeff : (seg + 1) * n_coeff] = poly_terms(deriv, t)
+        return row
+
+    def jerk_cost_block(T: float) -> np.ndarray:
+        """
+        构造单段的 Hessian 子块 Q，使得
+            integral_0^T (p'''(t)^2) dt = 0.5 * c^T Q c
+        """
+        Q = np.zeros((n_coeff, n_coeff))
+        for i in range(3, n_coeff):
+            for j in range(3, n_coeff):
+                fi = math.factorial(i) / math.factorial(i - 3)
+                fj = math.factorial(j) / math.factorial(j - 3)
+                power = i + j - 5  # (i-3) + (j-3) + 1
+                Q[i, j] = 2.0 * fi * fj * (T ** power) / power
+        return Q
+
+    # 1. 构造总代价矩阵 H（块对角）
+    H = np.zeros((n_var, n_var))
+    for seg in range(n_seg):
+        sl = slice(seg * n_coeff, (seg + 1) * n_coeff)
+        H[sl, sl] = jerk_cost_block(T_scale[seg])
+
+    # 2. 构造等式约束 Aeq x = beq
+    Aeq_rows: list[np.ndarray] = []
+    beq_x: list[float] = []
+    beq_y: list[float] = []
+    beq_z: list[float] = []
+
+    # (a) 每一段的起点和终点必须落在对应 waypoint 上
+    for seg in range(n_seg):
+        Aeq_rows.append(block_row(seg, 0, 0.0))
+        beq_x.append(waypoints[seg, 0])
+        beq_y.append(waypoints[seg, 1])
+        beq_z.append(waypoints[seg, 2])
+
+        Aeq_rows.append(block_row(seg, 0, T_scale[seg]))
+        beq_x.append(waypoints[seg + 1, 0])
+        beq_y.append(waypoints[seg + 1, 1])
+        beq_z.append(waypoints[seg + 1, 2])
+
+    # (b) 起点和终点设为静止，且加速度/jerk 也设为 0
+    # 这样轨迹首尾更自然，也更符合飞行器起降的直觉。
+    for deriv in (1, 2, 3):
+        Aeq_rows.append(block_row(0, deriv, 0.0))
+        beq_x.append(0.0)
+        beq_y.append(0.0)
+        beq_z.append(0.0)
+
+        Aeq_rows.append(block_row(n_seg - 1, deriv, T_scale[-1]))
+        beq_x.append(0.0)
+        beq_y.append(0.0)
+        beq_z.append(0.0)
+
+    # (c) 中间连接点要求导数连续
+    # 位置连续已经由两边都固定到同一个 waypoint 保证了，
+    # 这里额外要求速度、加速度、jerk、snap 连续。
+    for seg in range(n_seg - 1):
+        T = T_scale[seg]
+        for deriv in (1, 2, 3, 4):
+            row = block_row(seg, deriv, T) - block_row(seg + 1, deriv, 0.0)
+            Aeq_rows.append(row)
+            beq_x.append(0.0)
+            beq_y.append(0.0)
+            beq_z.append(0.0)
+
+    Aeq = np.vstack(Aeq_rows)
+    beq_x_arr = np.asarray(beq_x, dtype=float)
+    beq_y_arr = np.asarray(beq_y, dtype=float)
+    beq_z_arr = np.asarray(beq_z, dtype=float)
+
+    # 3. 三个坐标轴独立求解
+    sol_x = _solve_equality_qp(H, Aeq, beq_x_arr)
+    sol_y = _solve_equality_qp(H, Aeq, beq_y_arr)
+    sol_z = _solve_equality_qp(H, Aeq, beq_z_arr)
+
+    c_x = sol_x.reshape(n_seg, n_coeff).T
+    c_y = sol_y.reshape(n_seg, n_coeff).T
+    c_z = sol_z.reshape(n_seg, n_coeff).T
 
     # ========================================================================
     # End of your implementation
     # ========================================================================
-    raise NotImplementedError
+    return c_x, c_y, c_z, T_scale
 
 
 def _generate_minimum_snap(waypoints: np.ndarray, n_seg: int, total_time: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -181,9 +292,9 @@ class TrajectoryGenerator:
         if self.method == "smooth":
             self.n = 6  # quintic (5th order, 6 coefficients)
         elif self.method == "jerk":
-            self.n = 6  # 6th order
+            self.n = 7  # 6th order polynomial -> 7 coefficients
         else:  # snap
-            self.n = 8  # 8th order
+            self.n = 9  # 8th order polynomial -> 9 coefficients
 
         self._prepare()
 
