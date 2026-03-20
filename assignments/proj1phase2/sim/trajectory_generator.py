@@ -100,6 +100,7 @@ def _generate_smooth_only(waypoints: np.ndarray, n_seg: int, total_time: float) 
         return np.linalg.solve(A, b)
 
     # 对每一段、每一个坐标轴分别求 quintic 系数。
+    
     for seg in range(n_seg):
         T = T_scale[seg]
 
@@ -134,69 +135,86 @@ def _generate_minimum_jerk(waypoints: np.ndarray, n_seg: int, total_time: float)
     # ========================================================================
     # TODO: Implement your minimum jerk trajectory generation here
     # ========================================================================
-    # 这一部分和 smooth_only 最大的区别在于：
-    # 我们不再先“拍脑袋”指定 waypoint 处的速度/加速度，
-    # 而是把所有多项式系数放进一个二次规划里统一求解：
+    # minimum jerk 的核心思路是：
     #
-    #   min  integral (p'''(t)^2) dt
-    #   s.t. 必须经过所有 waypoint，并满足连续性约束
+    # 1. 每一段轨迹都用一个 6 阶多项式表示
+    #       p(t) = c0 + c1 t + ... + c6 t^6
+    #    所以每段有 7 个未知系数。
     #
-    # 这里每一段使用 6 阶多项式：
-    #   p(t) = c0 + c1 t + c2 t^2 + ... + c6 t^6
-    # 所以每段有 7 个系数。
+    # 2. 我们不手工指定中间 waypoint 处的速度/加速度，
+    #    而是把所有段的所有系数一起作为优化变量。
+    #
+    # 3. 目标函数是让 jerk = p'''(t) 尽量小：
+    #       min integral (p'''(t)^2) dt
+    #
+    # 4. 同时施加等式约束，保证：
+    #    - 每段的起点和终点落在 waypoint 上
+    #    - 起点/终点速度、加速度、jerk 为 0
+    #    - 相邻两段在连接点处速度、加速度、jerk、snap 连续
+    #
+    # 最后会得到一个标准二次规划：
+    #     min 0.5 x^T H x
+    #     s.t. Aeq x = beq
+    # 其中 x 是整条轨迹的全部多项式系数。
 
+    # 先按段长比例分配每段时长，避免短段和长段分到同样的时间。
     seg_vec = waypoints[1:] - waypoints[:-1]
     seg_len = np.linalg.norm(seg_vec, axis=1)
     seg_len = np.maximum(seg_len, 1e-3)
     T_scale = total_time * seg_len / np.sum(seg_len)
 
-    n_coeff = 7  # 6 阶多项式 -> 7 个系数
+    n_coeff = 7
     n_var = n_seg * n_coeff
 
     def poly_terms(deriv: int, t: float) -> np.ndarray:
         """
-        返回一个长度为 7 的行向量，使得：
-            poly_terms(deriv, t) @ c = p^(deriv)(t)
-        其中 c = [c0, c1, ..., c6]
+        返回一个长度为 7 的行向量 row，使得：
+            row @ c = p^(deriv)(t)
+        其中 c = [c0, c1, ..., c6] 是“从低次到高次”的系数。
         """
         row = np.zeros(n_coeff)
-        for i in range(deriv, n_coeff):
-            row[i] = math.factorial(i) / math.factorial(i - deriv) * (t ** (i - deriv))
+        for power in range(deriv, n_coeff):
+            row[power] = math.factorial(power) / math.factorial(power - deriv) * (t ** (power - deriv))
         return row
 
     def block_row(seg: int, deriv: int, t: float) -> np.ndarray:
-        """把单段多项式约束放到整条轨迹的大变量向量里。"""
+        """
+        把某一段上的导数约束，嵌入到整条轨迹的大变量向量里。
+        只有当前段对应的 7 个位置非零，其余段全是 0。
+        """
         row = np.zeros(n_var)
         row[seg * n_coeff : (seg + 1) * n_coeff] = poly_terms(deriv, t)
         return row
 
     def jerk_cost_block(T: float) -> np.ndarray:
         """
-        构造单段的 Hessian 子块 Q，使得
+        构造单段代价矩阵 Q，使得：
             integral_0^T (p'''(t)^2) dt = 0.5 * c^T Q c
+
+        这样把每一段的 Q 放到大矩阵对角线上，就得到了整体的 Hessian。
         """
         Q = np.zeros((n_coeff, n_coeff))
         for i in range(3, n_coeff):
             for j in range(3, n_coeff):
-                fi = math.factorial(i) / math.factorial(i - 3)
-                fj = math.factorial(j) / math.factorial(j - 3)
-                power = i + j - 5  # (i-3) + (j-3) + 1
-                Q[i, j] = 2.0 * fi * fj * (T ** power) / power
+                coeff_i = math.factorial(i) / math.factorial(i - 3)
+                coeff_j = math.factorial(j) / math.factorial(j - 3)
+                exponent = i + j - 5
+                Q[i, j] = 2.0 * coeff_i * coeff_j * (T ** exponent) / exponent
         return Q
 
-    # 1. 构造总代价矩阵 H（块对角）
+    # 整体目标矩阵 H 是分段代价矩阵的块对角拼接。
     H = np.zeros((n_var, n_var))
     for seg in range(n_seg):
-        sl = slice(seg * n_coeff, (seg + 1) * n_coeff)
-        H[sl, sl] = jerk_cost_block(T_scale[seg])
+        seg_slice = slice(seg * n_coeff, (seg + 1) * n_coeff)
+        H[seg_slice, seg_slice] = jerk_cost_block(T_scale[seg])
 
-    # 2. 构造等式约束 Aeq x = beq
+    # Aeq x = beq 里的每一行，表示一个线性等式约束。
     Aeq_rows: list[np.ndarray] = []
     beq_x: list[float] = []
     beq_y: list[float] = []
     beq_z: list[float] = []
 
-    # (a) 每一段的起点和终点必须落在对应 waypoint 上
+    # 1. 每一段的起点和终点必须落在对应航点上。
     for seg in range(n_seg):
         Aeq_rows.append(block_row(seg, 0, 0.0))
         beq_x.append(waypoints[seg, 0])
@@ -208,8 +226,8 @@ def _generate_minimum_jerk(waypoints: np.ndarray, n_seg: int, total_time: float)
         beq_y.append(waypoints[seg + 1, 1])
         beq_z.append(waypoints[seg + 1, 2])
 
-    # (b) 起点和终点设为静止，且加速度/jerk 也设为 0
-    # 这样轨迹首尾更自然，也更符合飞行器起降的直觉。
+    # 2. 起点和终点设为静止，同时把加速度和 jerk 也固定为 0。
+    # 这样首尾会更平顺，不会一开始或结束时突然“抽动”。
     for deriv in (1, 2, 3):
         Aeq_rows.append(block_row(0, deriv, 0.0))
         beq_x.append(0.0)
@@ -221,14 +239,13 @@ def _generate_minimum_jerk(waypoints: np.ndarray, n_seg: int, total_time: float)
         beq_y.append(0.0)
         beq_z.append(0.0)
 
-    # (c) 中间连接点要求导数连续
-    # 位置连续已经由两边都固定到同一个 waypoint 保证了，
-    # 这里额外要求速度、加速度、jerk、snap 连续。
+    # 3. 相邻两段在连接点处保持高阶连续。
+    # 位置连续已经由“两段都经过同一个 waypoint”保证了，
+    # 所以这里只额外约束速度、加速度、jerk、snap 连续。
     for seg in range(n_seg - 1):
         T = T_scale[seg]
         for deriv in (1, 2, 3, 4):
-            row = block_row(seg, deriv, T) - block_row(seg + 1, deriv, 0.0)
-            Aeq_rows.append(row)
+            Aeq_rows.append(block_row(seg, deriv, T) - block_row(seg + 1, deriv, 0.0))
             beq_x.append(0.0)
             beq_y.append(0.0)
             beq_z.append(0.0)
@@ -238,11 +255,12 @@ def _generate_minimum_jerk(waypoints: np.ndarray, n_seg: int, total_time: float)
     beq_y_arr = np.asarray(beq_y, dtype=float)
     beq_z_arr = np.asarray(beq_z, dtype=float)
 
-    # 3. 三个坐标轴独立求解
+    # x/y/z 三个轴完全独立，所以用同一个 H、Aeq，分别解三次即可。
     sol_x = _solve_equality_qp(H, Aeq, beq_x_arr)
     sol_y = _solve_equality_qp(H, Aeq, beq_y_arr)
     sol_z = _solve_equality_qp(H, Aeq, beq_z_arr)
 
+    # 每列对应一段，每列里是该段从低次到高次的多项式系数。
     c_x = sol_x.reshape(n_seg, n_coeff).T
     c_y = sol_y.reshape(n_seg, n_coeff).T
     c_z = sol_z.reshape(n_seg, n_coeff).T
@@ -294,7 +312,7 @@ class TrajectoryGenerator:
         elif self.method == "jerk":
             self.n = 7  # 6th order polynomial -> 7 coefficients
         else:  # snap
-            self.n = 9  # 8th order polynomial -> 9 coefficients
+            self.n = 8  # 8th order
 
         self._prepare()
 
