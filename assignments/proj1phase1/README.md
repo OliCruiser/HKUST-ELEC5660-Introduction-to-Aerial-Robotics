@@ -28,6 +28,7 @@
 - **位置** (x, y, z)：世界坐标系中的三维位置
 - **速度** (vx, vy, vz)：世界坐标系中的线速度
 - **四元数** (qw, qx, qy, qz)：姿态表示
+  <span style="color:red">https://www.bilibili.com/video/BV1Nr4y1j7kn/?spm_id_from=333.40164.top_right_bar_window_history.content.click</span>
 - **角速度** (ωx, ωy, ωz)：机体系中的角速度
 
 控制器输出为：
