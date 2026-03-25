@@ -279,12 +279,103 @@ def _generate_minimum_snap(waypoints: np.ndarray, n_seg: int, total_time: float)
     # ========================================================================
     # TODO: Implement your minimum snap trajectory generation here
     # ========================================================================
+    # Use segment times proportional to segment lengths.
+    seg_vec = waypoints[1:] - waypoints[:-1]
+    seg_len = np.linalg.norm(seg_vec, axis=1)
+    seg_len = np.maximum(seg_len, 1e-3)
+    T_scale = total_time * seg_len / np.sum(seg_len)
 
+    # 8th order polynomial => 9 coefficients per segment.
+    n_coeff = 9
+    n_var = n_seg * n_coeff
+
+    def poly_terms(deriv: int, t: float) -> np.ndarray:
+        """Return row such that row @ c = p^(deriv)(t)."""
+        row = np.zeros(n_coeff)
+        for power in range(deriv, n_coeff):
+            row[power] = math.factorial(power) / math.factorial(power - deriv) * (t ** (power - deriv))
+        return row
+
+    def block_row(seg: int, deriv: int, t: float) -> np.ndarray:
+        """Embed one segment derivative constraint into the full variable vector."""
+        row = np.zeros(n_var)
+        row[seg * n_coeff : (seg + 1) * n_coeff] = poly_terms(deriv, t)
+        return row
+
+    def snap_cost_block(T: float) -> np.ndarray:
+        """
+        Construct Q such that:
+            integral_0^T (p''''(t)^2) dt = 0.5 * c^T Q c
+        """
+        Q = np.zeros((n_coeff, n_coeff))
+        for i in range(4, n_coeff):
+            for j in range(4, n_coeff):
+                coeff_i = math.factorial(i) / math.factorial(i - 4)
+                coeff_j = math.factorial(j) / math.factorial(j - 4)
+                exponent = i + j - 7
+                Q[i, j] = 2.0 * coeff_i * coeff_j * (T ** exponent) / exponent
+        return Q
+
+    H = np.zeros((n_var, n_var))
+    for seg in range(n_seg):
+        seg_slice = slice(seg * n_coeff, (seg + 1) * n_coeff)
+        H[seg_slice, seg_slice] = snap_cost_block(T_scale[seg])
+
+    Aeq_rows: list[np.ndarray] = []
+    beq_x: list[float] = []
+    beq_y: list[float] = []
+    beq_z: list[float] = []
+
+    # Each segment starts and ends at the given waypoints.
+    for seg in range(n_seg):
+        Aeq_rows.append(block_row(seg, 0, 0.0))
+        beq_x.append(waypoints[seg, 0])
+        beq_y.append(waypoints[seg, 1])
+        beq_z.append(waypoints[seg, 2])
+
+        Aeq_rows.append(block_row(seg, 0, T_scale[seg]))
+        beq_x.append(waypoints[seg + 1, 0])
+        beq_y.append(waypoints[seg + 1, 1])
+        beq_z.append(waypoints[seg + 1, 2])
+
+    # Zero boundary derivatives up to snap for a gentle start/end.
+    for deriv in (1, 2, 3, 4):
+        Aeq_rows.append(block_row(0, deriv, 0.0))
+        beq_x.append(0.0)
+        beq_y.append(0.0)
+        beq_z.append(0.0)
+
+        Aeq_rows.append(block_row(n_seg - 1, deriv, T_scale[-1]))
+        beq_x.append(0.0)
+        beq_y.append(0.0)
+        beq_z.append(0.0)
+
+    # Continuity across internal waypoints up to the 6th derivative.
+    for seg in range(n_seg - 1):
+        T = T_scale[seg]
+        for deriv in (1, 2, 3, 4, 5, 6):
+            Aeq_rows.append(block_row(seg, deriv, T) - block_row(seg + 1, deriv, 0.0))
+            beq_x.append(0.0)
+            beq_y.append(0.0)
+            beq_z.append(0.0)
+
+    Aeq = np.vstack(Aeq_rows)
+    beq_x_arr = np.asarray(beq_x, dtype=float)
+    beq_y_arr = np.asarray(beq_y, dtype=float)
+    beq_z_arr = np.asarray(beq_z, dtype=float)
+
+    sol_x = _solve_equality_qp(H, Aeq, beq_x_arr)
+    sol_y = _solve_equality_qp(H, Aeq, beq_y_arr)
+    sol_z = _solve_equality_qp(H, Aeq, beq_z_arr)
+
+    c_x = sol_x.reshape(n_seg, n_coeff).T
+    c_y = sol_y.reshape(n_seg, n_coeff).T
+    c_z = sol_z.reshape(n_seg, n_coeff).T
 
     # ========================================================================
     # End of your implementation
     # ========================================================================
-    raise NotImplementedError
+    return c_x, c_y, c_z, T_scale
 
 
 @dataclass
@@ -312,7 +403,7 @@ class TrajectoryGenerator:
         elif self.method == "jerk":
             self.n = 7  # 6th order polynomial -> 7 coefficients
         else:  # snap
-            self.n = 8  # 8th order
+            self.n = 9  # 8th order polynomial -> 9 coefficients
 
         self._prepare()
 
@@ -358,5 +449,13 @@ class TrajectoryGenerator:
         s_des[3] = np.polyval(dcoeff_x, local_t)
         s_des[4] = np.polyval(dcoeff_y, local_t)
         s_des[5] = np.polyval(dcoeff_z, local_t)
+
+        ddcoeff_x = _poly_derivative(dcoeff_x)
+        ddcoeff_y = _poly_derivative(dcoeff_y)
+        ddcoeff_z = _poly_derivative(dcoeff_z)
+
+        s_des[6] = np.polyval(ddcoeff_x, local_t)
+        s_des[7] = np.polyval(ddcoeff_y, local_t)
+        s_des[8] = np.polyval(ddcoeff_z, local_t)
 
         return s_des
